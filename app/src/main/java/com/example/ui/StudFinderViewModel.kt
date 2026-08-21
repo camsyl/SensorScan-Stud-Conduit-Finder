@@ -29,9 +29,9 @@ data class StudFinderUiState(
     val audioMode: AudioMode = AudioMode.CONTINUOUS_TONE,
     val isHapticsEnabled: Boolean = true,
     val isHardwareAvailable: Boolean = true,
-    val isSimulatedMode: Boolean = false,
     val sweepHistory: List<SweepPoint> = emptyList(),
     val isCalibrating: Boolean = false,
+    val confirmedFastenerCount: Int = 0,
     val isEducationalSheetVisible: Boolean = false,
     val messageBanner: String? = null,
     val isProUnlocked: Boolean = false,
@@ -54,7 +54,7 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
     private val _uiState = MutableStateFlow(
         StudFinderUiState(
             isHardwareAvailable = sensorRepository.isHardwareAvailable,
-            isSimulatedMode = !sensorRepository.isHardwareAvailable
+            isCalibrating = sensorRepository.isHardwareAvailable
         )
     )
     val uiState: StateFlow<StudFinderUiState> = _uiState.asStateFlow()
@@ -66,17 +66,20 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
     private var tareCountSinceLastAd = 0
     private var interstitialTimerJob: Job? = null
 
-    // AC EMF Debounce and Hysteresis Filters to prevent phantom 50/60Hz flickering
-    private var acHazardConsecutiveHits = 0
+    // Time-based AC confirmation avoids device-rate-dependent frame counters.
+    private var acCandidateSinceNanos = 0L
+    private var acClearSinceNanos = 0L
     private var isAcHazardDebounced = false
-    private var acHazardCooldownCount = 0
+
+    // A fastener is confirmed only after a strong, stable spatial peak rises and falls.
+    private var isTrackingFastenerPeak = false
+    private var fastenerPeakStartNanos = 0L
+    private var trackedFastenerPeakDelta = 0f
+    private var confirmedFastenerUntilNanos = 0L
+    private var lastFastenerConfirmationNanos = 0L
+    private var confirmedFastenerCount = 0
 
     init {
-        // If device has no hardware magnetometer, default automatically to simulation demo mode
-        if (!sensorRepository.isHardwareAvailable) {
-            sensorRepository.setSimulationMode(true)
-        }
-
         audioFeedbackManager.setAudioMode(_uiState.value.audioMode)
         hapticFeedbackManager.isHapticsEnabled = _uiState.value.isHapticsEnabled
 
@@ -100,45 +103,57 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
     private fun processReading(reading: MagneticReading) {
         val currentState = _uiState.value
         val sensitivity = currentState.sensitivity
-        val scanMode = currentState.scanMode
+        val acCapabilityKnown = reading.isCalibrationReady && reading.sampleRateHz > 0f
+        val scanMode = if (acCapabilityKnown &&
+            !reading.isAcDetectionSupported &&
+            currentState.scanMode != ScanMode.FERROUS_ONLY
+        ) {
+            ScanMode.FERROUS_ONLY
+        } else {
+            currentState.scanMode
+        }
 
-        // Calculate ferrous proximity percentage based on current sensitivity scale
-        val rawProximity = (reading.deltaMagnitude / sensitivity.maxDeltaMicroTesla) * 100f
-        val proximityPercent = rawProximity.coerceIn(0f, 100f)
+        val readingUsable = reading.sensorError == null &&
+            reading.isCalibrationReady &&
+            reading.isSensorReliable &&
+            reading.isMotionStable
 
-        // Categorical ferrous detection state
+        val anomalyThreshold = maxOf(
+            sensitivity.minimumAnomalyMicroTesla,
+            reading.noiseFloorMicroTesla * sensitivity.anomalySignalToNoise
+        )
+        val centerThreshold = maxOf(
+            sensitivity.minimumCenterMicroTesla,
+            reading.noiseFloorMicroTesla * sensitivity.centerSignalToNoise
+        )
+
+        val proximityPercent = if (readingUsable && scanMode != ScanMode.AC_EMF_ONLY) {
+            ((reading.signalToNoise / sensitivity.maxSignalToNoise) * 100f).coerceIn(0f, 100f)
+        } else {
+            0f
+        }
+
+        val centerCandidate = readingUsable &&
+            reading.deltaMagnitude >= centerThreshold &&
+            reading.signalToNoise >= sensitivity.centerSignalToNoise
+        updateFastenerPeak(reading, centerCandidate)
+
+        val fastenerConfirmed = reading.timestampNanos <= confirmedFastenerUntilNanos
         val detectionState = when {
-            scanMode == ScanMode.AC_EMF_ONLY -> FerrousDetectionState.CLEAR
-            reading.deltaMagnitude >= sensitivity.centerThresholdMicroTesla -> FerrousDetectionState.CENTER_TARGET
-            reading.deltaMagnitude >= sensitivity.anomalyThresholdMicroTesla -> FerrousDetectionState.ANOMALY
+            !readingUsable || scanMode == ScanMode.AC_EMF_ONLY -> FerrousDetectionState.CLEAR
+            fastenerConfirmed -> FerrousDetectionState.CENTER_TARGET
+            reading.deltaMagnitude >= anomalyThreshold &&
+                reading.signalToNoise >= sensitivity.anomalySignalToNoise -> FerrousDetectionState.ANOMALY
             else -> FerrousDetectionState.CLEAR
         }
 
-        // AC EMF hazard state with hysteresis & multi-sample confirmation
-        // Requires 6 consecutive high-variance frames to trigger (filtering transient jitter)
-        // and 8 consecutive clear frames to release, preventing jumping and flickering.
-        val rawAcCandidate = when (scanMode) {
-            ScanMode.FERROUS_ONLY -> false
-            else -> reading.acVariance >= sensitivity.acVarianceThreshold
-        }
-
-        if (rawAcCandidate) {
-            acHazardConsecutiveHits++
-            acHazardCooldownCount = 0
-            if (acHazardConsecutiveHits >= 6) {
-                isAcHazardDebounced = true
-            }
-        } else {
-            acHazardConsecutiveHits = 0
-            acHazardCooldownCount++
-            // Release threshold with lower variance hysteresis
-            val belowReleaseThreshold = reading.acVariance < (sensitivity.acVarianceThreshold * 0.65f)
-            if (acHazardCooldownCount >= 8 || belowReleaseThreshold) {
-                isAcHazardDebounced = false
-            }
-        }
-
-        val isAcHazard = isAcHazardDebounced
+        val rawAcCandidate = scanMode != ScanMode.FERROUS_ONLY &&
+            readingUsable &&
+            reading.isAcDetectionSupported &&
+            reading.acFrequencyHz != null &&
+            reading.acSignalToNoise >= sensitivity.acSignalToNoiseThreshold
+        updateAcConfirmation(reading.timestampNanos, rawAcCandidate)
+        val isAcHazard = isAcHazardDebounced && scanMode != ScanMode.FERROUS_ONLY
 
         val enrichedReading = reading.copy(
             proximityPercent = proximityPercent,
@@ -147,7 +162,7 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
         )
 
         // Update peak delta
-        val newPeak = maxOf(currentState.peakDelta, reading.deltaMagnitude)
+        val newPeak = if (readingUsable) maxOf(currentState.peakDelta, reading.deltaMagnitude) else currentState.peakDelta
 
         // Oscilloscope historical record (downsampled to ~30-40 Hz for smooth performance)
         val now = System.currentTimeMillis()
@@ -157,7 +172,7 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
                 SweepPoint(
                     timestampMillis = now,
                     deltaB = reading.deltaMagnitude,
-                    acVariance = reading.acVariance,
+                    acSignalToNoise = reading.acSignalToNoise,
                     proximityPercent = proximityPercent
                 )
             )
@@ -172,15 +187,18 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { state ->
             state.copy(
                 reading = enrichedReading,
+                scanMode = scanMode,
                 peakDelta = newPeak,
-                sweepHistory = sweepPoints.toList()
+                sweepHistory = sweepPoints.toList(),
+                isCalibrating = reading.sensorError == null && !reading.isCalibrationReady,
+                confirmedFastenerCount = confirmedFastenerCount
             )
         }
 
         // Audio & Haptic feedback triggers
-        audioFeedbackManager.updateProximity(proximityPercent, isAcHazard)
+        audioFeedbackManager.updateProximity(proximityPercent, isAcHazard && readingUsable)
 
-        if (isAcHazard) {
+        if (isAcHazard && readingUsable) {
             hapticFeedbackManager.triggerAcHazardAlert()
         } else if (scanMode != ScanMode.AC_EMF_ONLY) {
             hapticFeedbackManager.triggerProximityFeedback(
@@ -188,6 +206,73 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
                 isDirectCenter = detectionState == FerrousDetectionState.CENTER_TARGET
             )
         }
+    }
+
+    private fun updateFastenerPeak(reading: MagneticReading, centerCandidate: Boolean) {
+        if (!reading.isMotionStable || !reading.isCalibrationReady || !reading.isSensorReliable) {
+            isTrackingFastenerPeak = false
+            fastenerPeakStartNanos = 0L
+            trackedFastenerPeakDelta = 0f
+            return
+        }
+
+        if (centerCandidate) {
+            if (!isTrackingFastenerPeak) {
+                isTrackingFastenerPeak = true
+                fastenerPeakStartNanos = reading.timestampNanos
+                trackedFastenerPeakDelta = reading.deltaMagnitude
+            } else {
+                trackedFastenerPeakDelta = maxOf(trackedFastenerPeakDelta, reading.deltaMagnitude)
+            }
+            return
+        }
+
+        if (!isTrackingFastenerPeak) return
+        val peakDuration = reading.timestampNanos - fastenerPeakStartNanos
+        val hasFallenFromPeak = reading.deltaMagnitude <= trackedFastenerPeakDelta * PEAK_RELEASE_RATIO
+        if (hasFallenFromPeak && peakDuration >= MINIMUM_PEAK_DURATION_NANOS) {
+            val separatedFromPrevious = reading.timestampNanos - lastFastenerConfirmationNanos >=
+                MINIMUM_CONFIRMATION_SEPARATION_NANOS
+            if (separatedFromPrevious) {
+                confirmedFastenerCount++
+                lastFastenerConfirmationNanos = reading.timestampNanos
+            }
+            confirmedFastenerUntilNanos = reading.timestampNanos + CONFIRMED_DISPLAY_NANOS
+        } else if (peakDuration < MAXIMUM_PEAK_DURATION_NANOS) {
+            return
+        }
+        isTrackingFastenerPeak = false
+        fastenerPeakStartNanos = 0L
+        trackedFastenerPeakDelta = 0f
+    }
+
+    private fun updateAcConfirmation(timestampNanos: Long, candidate: Boolean) {
+        if (candidate) {
+            acClearSinceNanos = 0L
+            if (acCandidateSinceNanos == 0L) acCandidateSinceNanos = timestampNanos
+            if (timestampNanos - acCandidateSinceNanos >= AC_CONFIRMATION_NANOS) {
+                isAcHazardDebounced = true
+            }
+        } else {
+            acCandidateSinceNanos = 0L
+            if (acClearSinceNanos == 0L) acClearSinceNanos = timestampNanos
+            if (timestampNanos - acClearSinceNanos >= AC_RELEASE_NANOS) {
+                isAcHazardDebounced = false
+            }
+        }
+    }
+
+    private fun resetDetectionConfirmation() {
+        acCandidateSinceNanos = 0L
+        acClearSinceNanos = 0L
+        isAcHazardDebounced = false
+        isTrackingFastenerPeak = false
+        fastenerPeakStartNanos = 0L
+        trackedFastenerPeakDelta = 0f
+        confirmedFastenerUntilNanos = 0L
+        lastFastenerConfirmationNanos = 0L
+        confirmedFastenerCount = 0
+        sweepPoints.clear()
     }
 
     fun onResume() {
@@ -203,15 +288,17 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
 
     fun tareZero() {
         sensorRepository.tareZeroCalibration()
-        _uiState.update { it.copy(peakDelta = 0.0f, isCalibrating = true) }
+        resetDetectionConfirmation()
+        _uiState.update {
+            it.copy(
+                peakDelta = 0.0f,
+                isCalibrating = sensorRepository.isHardwareAvailable,
+                confirmedFastenerCount = 0
+            )
+        }
         
         // Haptic tap on tare calibration
         hapticFeedbackManager.triggerProximityFeedback(100f, true)
-
-        viewModelScope.launch {
-            kotlinx.coroutines.delay(400)
-            _uiState.update { it.copy(isCalibrating = false) }
-        }
 
         // Increment tare usage counter; trigger interstitial ad after 5 calibration actions on free tier
         if (!_uiState.value.isProUnlocked) {
@@ -267,11 +354,23 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun setSensitivity(sensitivity: SensitivityLevel) {
+        resetDetectionConfirmation()
         _uiState.update { it.copy(sensitivity = sensitivity) }
     }
 
     fun setScanMode(scanMode: ScanMode) {
-        _uiState.update { it.copy(scanMode = scanMode) }
+        resetDetectionConfirmation()
+        _uiState.update { state ->
+            val acUnavailable = state.reading.isCalibrationReady &&
+                state.reading.sampleRateHz > 0f &&
+                !state.reading.isAcDetectionSupported
+            val availableMode = if (acUnavailable && scanMode != ScanMode.FERROUS_ONLY) {
+                ScanMode.FERROUS_ONLY
+            } else {
+                scanMode
+            }
+            state.copy(scanMode = availableMode)
+        }
     }
 
     fun setAudioMode(audioMode: AudioMode) {
@@ -282,11 +381,6 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
     fun setHapticsEnabled(enabled: Boolean) {
         hapticFeedbackManager.isHapticsEnabled = enabled
         _uiState.update { it.copy(isHapticsEnabled = enabled) }
-    }
-
-    fun toggleSimulationMode(enabled: Boolean) {
-        sensorRepository.setSimulationMode(enabled)
-        _uiState.update { it.copy(isSimulatedMode = enabled) }
     }
 
     fun resetPeak() {
@@ -344,5 +438,15 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
         audioFeedbackManager.stop()
         hapticFeedbackManager.stop()
         sensorRepository.stopListening()
+    }
+
+    private companion object {
+        const val MINIMUM_PEAK_DURATION_NANOS = 90_000_000L
+        const val MAXIMUM_PEAK_DURATION_NANOS = 2_500_000_000L
+        const val MINIMUM_CONFIRMATION_SEPARATION_NANOS = 1_500_000_000L
+        const val CONFIRMED_DISPLAY_NANOS = 1_200_000_000L
+        const val AC_CONFIRMATION_NANOS = 500_000_000L
+        const val AC_RELEASE_NANOS = 800_000_000L
+        const val PEAK_RELEASE_RATIO = 0.72f
     }
 }

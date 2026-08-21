@@ -4,42 +4,51 @@ package com.example.data
  * Operating scan mode for the stud and conduit detector.
  */
 enum class ScanMode(val label: String, val description: String) {
-    DUAL("Dual Mode", "Detect both ferrous fasteners and AC electrical lines simultaneously"),
-    FERROUS_ONLY("Ferrous Studs", "Focus on drywall screws, nails, and metal framing"),
-    AC_EMF_ONLY("AC Electrical", "Focus on live 50/60Hz electromagnetic conduit and wiring")
+    DUAL("Dual Mode", "Detect ferrous fasteners and possible energized 50/60 Hz conductors"),
+    FERROUS_ONLY("Fasteners", "Focus on drywall screws, nails, steel conduit, and metal framing"),
+    AC_EMF_ONLY("Energized AC", "Look for a sustained 50/60 Hz magnetic signature from current flow")
 }
 
 /**
- * Sensitivity preset adjusting full-scale range in micro-Teslas (µT)
- * and AC variance trigger thresholds.
+ * Device-independent sensitivity presets. Absolute floors prevent a very quiet
+ * sensor from becoming over-sensitive, while sigma/SNR thresholds adapt to the
+ * measured noise of each phone.
  */
 enum class SensitivityLevel(
     val label: String,
-    val maxDeltaMicroTesla: Float, // Full scale for 100% proximity
-    val anomalyThresholdMicroTesla: Float,
-    val centerThresholdMicroTesla: Float,
-    val acVarianceThreshold: Float
+    val maxSignalToNoise: Float,
+    val anomalySignalToNoise: Float,
+    val centerSignalToNoise: Float,
+    val minimumAnomalyMicroTesla: Float,
+    val minimumCenterMicroTesla: Float,
+    val acSignalToNoiseThreshold: Float
 ) {
     FINE(
-        label = "Fine (Deep / Small Screws)",
-        maxDeltaMicroTesla = 4.0f,
-        anomalyThresholdMicroTesla = 0.8f,
-        centerThresholdMicroTesla = 2.5f,
-        acVarianceThreshold = 3.5f
+        label = "Fine (quiet walls / small fasteners)",
+        maxSignalToNoise = 14.0f,
+        anomalySignalToNoise = 3.5f,
+        centerSignalToNoise = 7.0f,
+        minimumAnomalyMicroTesla = 0.7f,
+        minimumCenterMicroTesla = 1.8f,
+        acSignalToNoiseThreshold = 5.0f
     ),
     MEDIUM(
-        label = "Medium (Standard Drywall)",
-        maxDeltaMicroTesla = 10.0f,
-        anomalyThresholdMicroTesla = 1.8f,
-        centerThresholdMicroTesla = 6.0f,
-        acVarianceThreshold = 6.5f
+        label = "Medium (standard drywall)",
+        maxSignalToNoise = 22.0f,
+        anomalySignalToNoise = 5.0f,
+        centerSignalToNoise = 10.0f,
+        minimumAnomalyMicroTesla = 1.1f,
+        minimumCenterMicroTesla = 3.0f,
+        acSignalToNoiseThreshold = 8.0f
     ),
     COARSE(
-        label = "Coarse (Surface Metal / High Noise)",
-        maxDeltaMicroTesla = 22.0f,
-        anomalyThresholdMicroTesla = 4.0f,
-        centerThresholdMicroTesla = 14.0f,
-        acVarianceThreshold = 12.0f
+        label = "Coarse (high noise / surface metal)",
+        maxSignalToNoise = 36.0f,
+        anomalySignalToNoise = 8.0f,
+        centerSignalToNoise = 16.0f,
+        minimumAnomalyMicroTesla = 2.2f,
+        minimumCenterMicroTesla = 6.0f,
+        acSignalToNoiseThreshold = 12.0f
     )
 }
 
@@ -48,8 +57,8 @@ enum class SensitivityLevel(
  */
 enum class FerrousDetectionState(val label: String, val levelCode: Int) {
     CLEAR("Ambient / Clear", 0),
-    ANOMALY("Ferrous Anomaly Detected", 1),
-    CENTER_TARGET("Direct Center (Screw/Stud)", 2)
+    ANOMALY("Ferrous Object Candidate", 1),
+    CENTER_TARGET("Fastener Peak Confirmed", 2)
 }
 
 /**
@@ -68,12 +77,23 @@ data class MagneticReading(
     val rawX: Float = 0f,
     val rawY: Float = 0f,
     val rawZ: Float = 0f,
-    val rawMagnitude: Float = 0f, // |B| in µT
-    val filteredMagnitude: Float = 0f, // EMA filtered magnitude
-    val ambientBaseline: Float = 0f, // Tared baseline
-    val deltaMagnitude: Float = 0f, // ΔB = |filtered - baseline|
-    val acVariance: Float = 0f, // Sliding window variance (AC EMF)
-    val acPeakToPeak: Float = 0f, // Sliding window max - min (µT)
+    val rawMagnitude: Float = 0f,
+    val filteredMagnitude: Float = 0f,
+    val ambientBaseline: Float = 0f,
+    val deltaMagnitude: Float = 0f,
+    val noiseFloorMicroTesla: Float = 0f,
+    val signalToNoise: Float = 0f,
+    val acSignalToNoise: Float = 0f,
+    val acFrequencyHz: Float? = null,
+    val acFieldStrengthMicroTesla: Float = 0f,
+    val sampleRateHz: Float = 0f,
+    val isAcDetectionSupported: Boolean = false,
+    val isMotionStable: Boolean = true,
+    val isCalibrationReady: Boolean = false,
+    val calibrationProgress: Float = 0f,
+    val isSensorReliable: Boolean = true,
+    val sensorError: String? = null,
+    val sensorName: String = "",
     val proximityPercent: Float = 0f, // 0..100%
     val detectionState: FerrousDetectionState = FerrousDetectionState.CLEAR,
     val isAcHazardActive: Boolean = false,
@@ -86,6 +106,6 @@ data class MagneticReading(
 data class SweepPoint(
     val timestampMillis: Long,
     val deltaB: Float,
-    val acVariance: Float,
+    val acSignalToNoise: Float,
     val proximityPercent: Float
 )

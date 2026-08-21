@@ -21,17 +21,23 @@ class ExampleRobolectricTest {
   fun `read string from context`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val appName = context.getString(R.string.app_name)
-    assertEquals("SensorScan", appName)
+    assertEquals("SensorScan Debug", appName)
   }
 
   @Test
   fun `verify sensitivity thresholds and proximity calculations`() {
     val medium = SensitivityLevel.MEDIUM
-    val delta = 6.5f
-    val proximity = (delta / medium.maxDeltaMicroTesla) * 100f
-    assertEquals(65f, proximity, 0.01f)
+    val noiseFloor = 0.3f
+    val delta = 4.0f
+    val signalToNoise = delta / noiseFloor
+    val proximity = (signalToNoise / medium.maxSignalToNoise) * 100f
+    assertEquals(60.606f, proximity, 0.01f)
 
-    val isCenter = delta >= medium.centerThresholdMicroTesla
+    val dynamicCenterThreshold = maxOf(
+        medium.minimumCenterMicroTesla,
+        noiseFloor * medium.centerSignalToNoise
+    )
+    val isCenter = delta >= dynamicCenterThreshold && signalToNoise >= medium.centerSignalToNoise
     assertTrue(isCenter)
   }
 
