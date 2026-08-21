@@ -66,6 +66,11 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
     private var tareCountSinceLastAd = 0
     private var interstitialTimerJob: Job? = null
 
+    // AC EMF Debounce and Hysteresis Filters to prevent phantom 50/60Hz flickering
+    private var acHazardConsecutiveHits = 0
+    private var isAcHazardDebounced = false
+    private var acHazardCooldownCount = 0
+
     init {
         // If device has no hardware magnetometer, default automatically to simulation demo mode
         if (!sensorRepository.isHardwareAvailable) {
@@ -109,11 +114,31 @@ class StudFinderViewModel(application: Application) : AndroidViewModel(applicati
             else -> FerrousDetectionState.CLEAR
         }
 
-        // AC EMF hazard state
-        val isAcHazard = when (scanMode) {
+        // AC EMF hazard state with hysteresis & multi-sample confirmation
+        // Requires 6 consecutive high-variance frames to trigger (filtering transient jitter)
+        // and 8 consecutive clear frames to release, preventing jumping and flickering.
+        val rawAcCandidate = when (scanMode) {
             ScanMode.FERROUS_ONLY -> false
             else -> reading.acVariance >= sensitivity.acVarianceThreshold
         }
+
+        if (rawAcCandidate) {
+            acHazardConsecutiveHits++
+            acHazardCooldownCount = 0
+            if (acHazardConsecutiveHits >= 6) {
+                isAcHazardDebounced = true
+            }
+        } else {
+            acHazardConsecutiveHits = 0
+            acHazardCooldownCount++
+            // Release threshold with lower variance hysteresis
+            val belowReleaseThreshold = reading.acVariance < (sensitivity.acVarianceThreshold * 0.65f)
+            if (acHazardCooldownCount >= 8 || belowReleaseThreshold) {
+                isAcHazardDebounced = false
+            }
+        }
+
+        val isAcHazard = isAcHazardDebounced
 
         val enrichedReading = reading.copy(
             proximityPercent = proximityPercent,

@@ -25,21 +25,21 @@ enum class SensitivityLevel(
         maxDeltaMicroTesla = 4.0f,
         anomalyThresholdMicroTesla = 0.8f,
         centerThresholdMicroTesla = 2.5f,
-        acVarianceThreshold = 0.6f
+        acVarianceThreshold = 3.5f
     ),
     MEDIUM(
         label = "Medium (Standard Drywall)",
         maxDeltaMicroTesla = 10.0f,
         anomalyThresholdMicroTesla = 1.8f,
         centerThresholdMicroTesla = 6.0f,
-        acVarianceThreshold = 1.2f
+        acVarianceThreshold = 6.5f
     ),
     COARSE(
         label = "Coarse (Surface Metal / High Noise)",
         maxDeltaMicroTesla = 22.0f,
         anomalyThresholdMicroTesla = 4.0f,
         centerThresholdMicroTesla = 14.0f,
-        acVarianceThreshold = 2.5f
+        acVarianceThreshold = 12.0f
     )
 }
 

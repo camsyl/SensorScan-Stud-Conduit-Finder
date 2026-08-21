@@ -290,18 +290,6 @@ fun StudFinderScreen(
                 HardwareWarningBanner(isSimulated = state.isSimulatedMode)
             }
 
-            // Live AC Hazard Warning Card
-            AnimatedVisibility(
-                visible = state.reading.isAcHazardActive,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                AcHazardWarningCard(
-                    variance = state.reading.acVariance,
-                    peakToPeak = state.reading.acPeakToPeak
-                )
-            }
-
             // Mode Selector Segmented Chips
             ScanModeSelector(
                 currentMode = state.scanMode,
@@ -312,6 +300,9 @@ fun StudFinderScreen(
             FerrousTargetVisualizer(
                 proximityPercent = state.reading.proximityPercent,
                 detectionState = state.reading.detectionState,
+                isAcHazard = state.reading.isAcHazardActive,
+                acVariance = state.reading.acVariance,
+                acPeakToPeak = state.reading.acPeakToPeak,
                 deltaMagnitude = state.reading.deltaMagnitude,
                 peakDelta = state.peakDelta,
                 ambientBaseline = state.reading.ambientBaseline,
@@ -430,6 +421,9 @@ fun StudFinderScreen(
 fun FerrousTargetVisualizer(
     proximityPercent: Float,
     detectionState: FerrousDetectionState,
+    isAcHazard: Boolean,
+    acVariance: Float,
+    acPeakToPeak: Float,
     deltaMagnitude: Float,
     peakDelta: Float,
     ambientBaseline: Float,
@@ -443,16 +437,17 @@ fun FerrousTargetVisualizer(
     )
 
     val targetColor by animateColorAsState(
-        targetValue = when (detectionState) {
-            FerrousDetectionState.CENTER_TARGET -> TargetGreen
-            FerrousDetectionState.ANOMALY -> AmberPrimary
-            FerrousDetectionState.CLEAR -> TextDisabled
+        targetValue = when {
+            isAcHazard -> HazardRed
+            detectionState == FerrousDetectionState.CENTER_TARGET -> TargetGreen
+            detectionState == FerrousDetectionState.ANOMALY -> AmberPrimary
+            else -> TextDisabled
         },
         animationSpec = tween(durationMillis = 150),
         label = "target_color"
     )
 
-    // Pulse animation when direct center is reached
+    // Pulse animation when direct center or AC hazard is reached
     val infiniteTransition = rememberInfiniteTransition(label = "center_pulse")
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 1.0f,
@@ -472,7 +467,8 @@ fun FerrousTargetVisualizer(
         shape = RoundedCornerShape(20.dp),
         border = BorderStroke(
             1.5.dp,
-            if (detectionState == FerrousDetectionState.CENTER_TARGET) TargetGreen
+            if (isAcHazard) HazardRed
+            else if (detectionState == FerrousDetectionState.CENTER_TARGET) TargetGreen
             else if (detectionState == FerrousDetectionState.ANOMALY) AmberPrimary.copy(alpha = 0.6f)
             else CarbonBorder
         )
@@ -483,8 +479,13 @@ fun FerrousTargetVisualizer(
                 .padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Status Header Banner
-            DetectionStatusBanner(detectionState = detectionState, isCalibrating = isCalibrating)
+            // Status Header Banner (Includes integrated AC Hazard state without jumping layout)
+            DetectionStatusBanner(
+                detectionState = detectionState,
+                isAcHazard = isAcHazard,
+                acVariance = acVariance,
+                isCalibrating = isCalibrating
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -649,21 +650,30 @@ fun FerrousTargetVisualizer(
 @Composable
 fun DetectionStatusBanner(
     detectionState: FerrousDetectionState,
+    isAcHazard: Boolean = false,
+    acVariance: Float = 0f,
     isCalibrating: Boolean
 ) {
     val (bgColor, textColor, labelText) = when {
         isCalibrating -> Triple(CyanElectric.copy(alpha = 0.2f), CyanElectric, "CALIBRATING BASELINE...")
+        isAcHazard -> Triple(HazardRed.copy(alpha = 0.25f), HazardRed, "CAUTION: LIVE AC CONDUIT / WIRE (50/60Hz)")
         detectionState == FerrousDetectionState.CENTER_TARGET -> Triple(TargetGreen.copy(alpha = 0.2f), TargetGreen, "DIRECT CENTER: DRYWALL FASTENER")
         detectionState == FerrousDetectionState.ANOMALY -> Triple(AmberPrimary.copy(alpha = 0.2f), AmberPrimary, "FERROUS ANOMALY DETECTED")
         else -> Triple(CarbonSurfaceVariant, TextMediumEmphasis, "SCANNING: CLEAR / AMBIENT")
     }
+
+    val animatedBorderColor by animateColorAsState(
+        targetValue = textColor.copy(alpha = if (isAcHazard) 0.8f else 0.4f),
+        animationSpec = tween(150),
+        label = "status_border_color"
+    )
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(bgColor)
-            .border(1.dp, textColor.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+            .border(1.dp, animatedBorderColor, RoundedCornerShape(8.dp))
             .padding(vertical = 8.dp, horizontal = 12.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -671,12 +681,21 @@ fun DetectionStatusBanner(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(textColor)
-            )
+            if (isAcHazard) {
+                Icon(
+                    imageVector = Icons.Default.ElectricBolt,
+                    contentDescription = "AC Hazard",
+                    tint = HazardRed,
+                    modifier = Modifier.size(16.dp)
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(textColor)
+                )
+            }
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = labelText,
