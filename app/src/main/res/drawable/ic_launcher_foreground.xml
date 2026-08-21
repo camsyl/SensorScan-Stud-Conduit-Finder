@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Outer crosshairs / sensor bracket -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFB300"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M34,42 L34,34 L42,34 M66,34 L74,34 L74,42 M74,66 L74,74 L66,74 M42,74 L34,74 L34,66" />
+
+    <!-- Center Stud Bar (Vertical Framing) -->
+    <path
+        android:fillColor="#22FFFFFF"
+        android:strokeColor="#33FFFFFF"
+        android:strokeWidth="1.5"
+        android:pathData="M48,28 L60,28 L60,80 L48,80 Z" />
+
+    <!-- Magnetic field scan waves (Amber) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFB300"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M42,46 C46,42 62,42 66,46 M38,40 C44,34 64,34 70,40" />
+
+    <!-- Drywall Screw / Ferrous Target Center (Gold / White) -->
+    <path
+        android:fillColor="#FFD54F"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:pathData="M 54, 54 m -6, 0 a 6,6 0 1,0 12,0 a 6,6 0 1,0 -12,0" />
+    
+    <!-- Screw Slot Cross -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1E232E"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M51.5,54 L56.5,54 M54,51.5 L54,56.5" />
+
+    <!-- AC Electrical Hazard Spark (Cyan / Hazard) -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M55,64 L52,70 L55,70 L53,77 L58,69 L55,69 Z" />
+
+</vector>

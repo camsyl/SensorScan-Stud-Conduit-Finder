@@ -1,0 +1,6 @@
+{
+  "name": "SensorScan",
+  "description": "Magnetic stud finder and AC electrical conduit detector",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
