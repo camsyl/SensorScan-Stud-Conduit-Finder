@@ -32,7 +32,6 @@ class MainActivity : ComponentActivity() {
                     onSetScanMode = viewModel::setScanMode,
                     onSetAudioMode = viewModel::setAudioMode,
                     onSetHapticsEnabled = viewModel::setHapticsEnabled,
-                    onToggleSimulation = viewModel::toggleSimulationMode,
                     onResetPeak = viewModel::resetPeak,
                     onShowEducationalSheet = viewModel::showEducationalSheet,
                     onShowProDialog = viewModel::setProDialogVisible,

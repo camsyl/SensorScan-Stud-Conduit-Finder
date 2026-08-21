@@ -30,11 +30,11 @@ class GreetingScreenshotTest {
   fun greeting_screenshot() {
     val now = System.currentTimeMillis()
     val mockHistory = listOf(
-      SweepPoint(now - 4000, 0.4f, 0.1f, 4f),
-      SweepPoint(now - 3000, 1.2f, 0.2f, 12f),
-      SweepPoint(now - 2000, 4.5f, 0.4f, 45f),
-      SweepPoint(now - 1000, 7.8f, 0.5f, 78f),
-      SweepPoint(now, 6.2f, 0.3f, 62f)
+      SweepPoint(now - 4000, 0.4f, 1.1f, 4f),
+      SweepPoint(now - 3000, 1.2f, 1.3f, 12f),
+      SweepPoint(now - 2000, 4.5f, 1.2f, 45f),
+      SweepPoint(now - 1000, 7.8f, 1.1f, 78f),
+      SweepPoint(now, 6.2f, 1.0f, 62f)
     )
 
     val sampleState = StudFinderUiState(
@@ -46,6 +46,11 @@ class GreetingScreenshotTest {
         filteredMagnitude = 54.2f,
         ambientBaseline = 48.0f,
         deltaMagnitude = 6.2f,
+        noiseFloorMicroTesla = 0.3f,
+        signalToNoise = 20.6f,
+        sampleRateHz = 190f,
+        isAcDetectionSupported = true,
+        isCalibrationReady = true,
         proximityPercent = 62.0f,
         detectionState = FerrousDetectionState.CENTER_TARGET,
         isAcHazardActive = false
@@ -63,7 +68,6 @@ class GreetingScreenshotTest {
           onSetScanMode = {},
           onSetAudioMode = {},
           onSetHapticsEnabled = {},
-          onToggleSimulation = {},
           onResetPeak = {},
           onShowEducationalSheet = {},
           onShowProDialog = {},

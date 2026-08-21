@@ -48,8 +48,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Sensors
-import androidx.compose.material.icons.filled.SensorsOff
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Vibration
@@ -135,7 +133,6 @@ fun StudFinderScreen(
     onSetScanMode: (ScanMode) -> Unit,
     onSetAudioMode: (AudioMode) -> Unit,
     onSetHapticsEnabled: (Boolean) -> Unit,
-    onToggleSimulation: (Boolean) -> Unit,
     onResetPeak: () -> Unit,
     onShowEducationalSheet: (Boolean) -> Unit,
     onShowProDialog: (Boolean) -> Unit,
@@ -189,7 +186,7 @@ fun StudFinderScreen(
                             }
                         }
                         Text(
-                            text = "STUD & CONDUIT DETECTOR",
+                            text = "FASTENER & ENERGIZED-AC SCANNER",
                             style = MaterialTheme.typography.labelSmall,
                             letterSpacing = 1.2.sp,
                             color = TextMediumEmphasis
@@ -209,18 +206,6 @@ fun StudFinderScreen(
                                 tint = AmberPrimary
                             )
                         }
-                    }
-
-                    // Demo / Simulation mode toggle
-                    IconButton(
-                        onClick = { onToggleSimulation(!state.isSimulatedMode) },
-                        modifier = Modifier.testTag("simulation_toggle_button")
-                    ) {
-                        Icon(
-                            imageVector = if (state.isSimulatedMode) Icons.Default.SensorsOff else Icons.Default.Sensors,
-                            contentDescription = if (state.isSimulatedMode) "Hardware Simulation Active" else "Physical Sensor Active",
-                            tint = if (state.isSimulatedMode) AmberSecondary else CyanElectric
-                        )
                     }
 
                     // Reset Peak
@@ -285,14 +270,21 @@ fun StudFinderScreen(
                 )
             }
 
-            // Hardware missing notice or simulation badge
-            if (!state.isHardwareAvailable) {
-                HardwareWarningBanner(isSimulated = state.isSimulatedMode)
+            // Real hardware is mandatory; no generated-reading fallback exists.
+            if (!state.isHardwareAvailable || state.reading.sensorError != null) {
+                HardwareWarningBanner(state.reading.sensorError)
+            } else if (state.reading.isCalibrationReady &&
+                state.reading.sampleRateHz > 0f &&
+                !state.reading.isAcDetectionSupported
+            ) {
+                AcCapabilityWarningBanner(state.reading.sampleRateHz)
             }
 
             // Mode Selector Segmented Chips
             ScanModeSelector(
                 currentMode = state.scanMode,
+                isAcCapabilityKnown = state.reading.isCalibrationReady && state.reading.sampleRateHz > 0f,
+                isAcDetectionSupported = state.reading.isAcDetectionSupported,
                 onModeSelected = onSetScanMode
             )
 
@@ -301,23 +293,32 @@ fun StudFinderScreen(
                 proximityPercent = state.reading.proximityPercent,
                 detectionState = state.reading.detectionState,
                 isAcHazard = state.reading.isAcHazardActive,
-                acVariance = state.reading.acVariance,
-                acPeakToPeak = state.reading.acPeakToPeak,
+                acSignalToNoise = state.reading.acSignalToNoise,
+                acFrequencyHz = state.reading.acFrequencyHz,
                 deltaMagnitude = state.reading.deltaMagnitude,
                 peakDelta = state.peakDelta,
                 ambientBaseline = state.reading.ambientBaseline,
-                rawMagnitude = state.reading.rawMagnitude,
-                isCalibrating = state.isCalibrating
+                isCalibrating = state.isCalibrating,
+                isMotionStable = state.reading.isMotionStable,
+                confirmedFastenerCount = state.confirmedFastenerCount
             )
 
             // Real-Time Sweep Visualizer (Scrolling Oscilloscope Canvas)
             SweepOscilloscopeCard(
                 history = state.sweepHistory,
-                currentDelta = state.reading.deltaMagnitude,
-                currentVariance = state.reading.acVariance,
-                thresholdAnomaly = state.sensitivity.anomalyThresholdMicroTesla,
-                thresholdCenter = state.sensitivity.centerThresholdMicroTesla,
-                maxScale = state.sensitivity.maxDeltaMicroTesla
+                thresholdAnomaly = maxOf(
+                    state.sensitivity.minimumAnomalyMicroTesla,
+                    state.reading.noiseFloorMicroTesla * state.sensitivity.anomalySignalToNoise
+                ),
+                thresholdCenter = maxOf(
+                    state.sensitivity.minimumCenterMicroTesla,
+                    state.reading.noiseFloorMicroTesla * state.sensitivity.centerSignalToNoise
+                ),
+                maxScale = maxOf(
+                    state.peakDelta * 1.15f,
+                    state.sensitivity.minimumCenterMicroTesla * 2f,
+                    5f
+                )
             )
 
             // Prominent "TARE / CALIBRATE ZERO" Button
@@ -348,8 +349,12 @@ fun StudFinderScreen(
                 rawZ = state.reading.rawZ,
                 rawMag = state.reading.rawMagnitude,
                 filteredMag = state.reading.filteredMagnitude,
-                acVariance = state.reading.acVariance,
-                acPeakToPeak = state.reading.acPeakToPeak
+                noiseFloor = state.reading.noiseFloorMicroTesla,
+                signalToNoise = state.reading.signalToNoise,
+                acSignalToNoise = state.reading.acSignalToNoise,
+                acFrequencyHz = state.reading.acFrequencyHz,
+                sampleRateHz = state.reading.sampleRateHz,
+                sensorName = state.reading.sensorName
             )
 
             // Bottom Ad Banner for Free Users or Pro Plan Showcase
@@ -422,13 +427,14 @@ fun FerrousTargetVisualizer(
     proximityPercent: Float,
     detectionState: FerrousDetectionState,
     isAcHazard: Boolean,
-    acVariance: Float,
-    acPeakToPeak: Float,
+    acSignalToNoise: Float,
+    acFrequencyHz: Float?,
     deltaMagnitude: Float,
     peakDelta: Float,
     ambientBaseline: Float,
-    rawMagnitude: Float,
-    isCalibrating: Boolean
+    isCalibrating: Boolean,
+    isMotionStable: Boolean,
+    confirmedFastenerCount: Int
 ) {
     val animatedProximity by animateFloatAsState(
         targetValue = proximityPercent,
@@ -483,8 +489,11 @@ fun FerrousTargetVisualizer(
             DetectionStatusBanner(
                 detectionState = detectionState,
                 isAcHazard = isAcHazard,
-                acVariance = acVariance,
-                isCalibrating = isCalibrating
+                acSignalToNoise = acSignalToNoise,
+                acFrequencyHz = acFrequencyHz,
+                isCalibrating = isCalibrating,
+                isMotionStable = isMotionStable,
+                confirmedFastenerCount = confirmedFastenerCount
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -651,15 +660,33 @@ fun FerrousTargetVisualizer(
 fun DetectionStatusBanner(
     detectionState: FerrousDetectionState,
     isAcHazard: Boolean = false,
-    acVariance: Float = 0f,
-    isCalibrating: Boolean
+    acSignalToNoise: Float = 0f,
+    acFrequencyHz: Float? = null,
+    isCalibrating: Boolean,
+    isMotionStable: Boolean,
+    confirmedFastenerCount: Int
 ) {
     val (bgColor, textColor, labelText) = when {
+        isCalibrating && !isMotionStable -> Triple(CyanElectric.copy(alpha = 0.2f), CyanElectric, "HOLD STEADY TO CALIBRATE")
         isCalibrating -> Triple(CyanElectric.copy(alpha = 0.2f), CyanElectric, "CALIBRATING BASELINE...")
-        isAcHazard -> Triple(HazardRed.copy(alpha = 0.25f), HazardRed, "CAUTION: LIVE AC CONDUIT / WIRE (50/60Hz)")
-        detectionState == FerrousDetectionState.CENTER_TARGET -> Triple(TargetGreen.copy(alpha = 0.2f), TargetGreen, "DIRECT CENTER: DRYWALL FASTENER")
-        detectionState == FerrousDetectionState.ANOMALY -> Triple(AmberPrimary.copy(alpha = 0.2f), AmberPrimary, "FERROUS ANOMALY DETECTED")
-        else -> Triple(CarbonSurfaceVariant, TextMediumEmphasis, "SCANNING: CLEAR / AMBIENT")
+        !isMotionStable -> Triple(AmberPrimary.copy(alpha = 0.2f), AmberPrimary, "MOTION REJECTED — KEEP PHONE FLAT AND MOVE SLOWLY")
+        isAcHazard -> Triple(
+            HazardRed.copy(alpha = 0.25f),
+            HazardRed,
+            "POSSIBLE ENERGIZED CONDUCTOR: ${acFrequencyHz?.toInt() ?: 50} Hz (SNR ${String.format(Locale.US, "%.1f", acSignalToNoise)})"
+        )
+        detectionState == FerrousDetectionState.CENTER_TARGET && confirmedFastenerCount >= 2 -> Triple(
+            TargetGreen.copy(alpha = 0.2f),
+            TargetGreen,
+            "MULTIPLE FASTENERS FOUND — VERIFY THEY SHARE A VERTICAL LINE"
+        )
+        detectionState == FerrousDetectionState.CENTER_TARGET -> Triple(
+            TargetGreen.copy(alpha = 0.2f),
+            TargetGreen,
+            "FASTENER PEAK CONFIRMED — NOW SCAN VERTICALLY"
+        )
+        detectionState == FerrousDetectionState.ANOMALY -> Triple(AmberPrimary.copy(alpha = 0.2f), AmberPrimary, "FERROUS OBJECT CANDIDATE")
+        else -> Triple(CarbonSurfaceVariant, TextMediumEmphasis, "REAL SENSOR: CLEAR / AMBIENT")
     }
 
     val animatedBorderColor by animateColorAsState(
@@ -715,8 +742,6 @@ fun DetectionStatusBanner(
 @Composable
 fun SweepOscilloscopeCard(
     history: List<SweepPoint>,
-    currentDelta: Float,
-    currentVariance: Float,
     thresholdAnomaly: Float,
     thresholdCenter: Float,
     maxScale: Float
@@ -883,7 +908,7 @@ fun SweepOscilloscopeCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     LegendTag(color = AmberPrimary, label = "ΔB (Ferrous)")
-                    LegendTag(color = TargetGreen, label = "Stud Center")
+                    LegendTag(color = TargetGreen, label = "Confirmed Fastener")
                 }
             }
         }
@@ -967,12 +992,12 @@ fun TareCalibrationButton(
 }
 
 /**
- * Live AC Electromagnetic Conduit / Wire Hazard Warning Card.
+ * Possible energized-conductor warning. This is not a safety-clearance result.
  */
 @Composable
 fun AcHazardWarningCard(
-    variance: Float,
-    peakToPeak: Float
+    signalToNoise: Float,
+    frequencyHz: Float
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "ac_alert_pulse")
     val alertAlpha by infiniteTransition.animateFloat(
@@ -1008,7 +1033,7 @@ fun AcHazardWarningCard(
             ) {
                 Icon(
                     imageVector = Icons.Default.ElectricBolt,
-                    contentDescription = "Live AC Hazard",
+                    contentDescription = "Possible energized conductor",
                     tint = Color.White,
                     modifier = Modifier.size(26.dp)
                 )
@@ -1018,18 +1043,18 @@ fun AcHazardWarningCard(
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "CAUTION: LIVE AC CONDUIT / WIRE",
+                    text = "POSSIBLE ENERGIZED CONDUCTOR",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Black,
                     color = Color(0xFFFF8A80)
                 )
                 Text(
-                    text = "50/60 Hz electromagnetic oscillation detected! Do not drill here.",
+                    text = "A sustained 50/60 Hz magnetic signature was detected. Verify with a dedicated live-wire detector before drilling.",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextHighEmphasis
                 )
                 Text(
-                    text = String.format(Locale.US, "AC Variance: %.2f | AC P-to-P: %.2f µT", variance, peakToPeak),
+                    text = String.format(Locale.US, "Frequency: %.0f Hz | Spectral SNR: %.1f", frequencyHz, signalToNoise),
                     style = MaterialTheme.typography.labelSmall,
                     color = CyanElectric
                 )
@@ -1044,6 +1069,8 @@ fun AcHazardWarningCard(
 @Composable
 fun ScanModeSelector(
     currentMode: ScanMode,
+    isAcCapabilityKnown: Boolean,
+    isAcDetectionSupported: Boolean,
     onModeSelected: (ScanMode) -> Unit
 ) {
     Row(
@@ -1057,21 +1084,28 @@ fun ScanModeSelector(
     ) {
         ScanMode.values().forEach { mode ->
             val isSelected = currentMode == mode
+            val isEnabled = mode == ScanMode.FERROUS_ONLY ||
+                !isAcCapabilityKnown ||
+                isAcDetectionSupported
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(8.dp))
                     .background(if (isSelected) AmberPrimary else Color.Transparent)
-                    .clickable { onModeSelected(mode) }
+                    .clickable(enabled = isEnabled) { onModeSelected(mode) }
                     .padding(vertical = 8.dp)
                     .testTag("mode_${mode.name.lowercase()}"),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = mode.label,
+                    text = if (isEnabled) mode.label else "${mode.label}\nUnavailable",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    color = if (isSelected) Color(0xFF261900) else TextMediumEmphasis,
+                    color = when {
+                        isSelected -> Color(0xFF261900)
+                        isEnabled -> TextMediumEmphasis
+                        else -> TextDisabled
+                    },
                     textAlign = TextAlign.Center
                 )
             }
@@ -1140,7 +1174,7 @@ fun SensitivitySelectorCard(
 
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "${currentLevel.label} (Full Scale: ±${currentLevel.maxDeltaMicroTesla} µT)",
+                text = "${currentLevel.label} · adaptive threshold ${currentLevel.anomalySignalToNoise}× measured noise",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextMediumEmphasis
             )
@@ -1243,8 +1277,12 @@ fun SensorTelemetryCard(
     rawZ: Float,
     rawMag: Float,
     filteredMag: Float,
-    acVariance: Float,
-    acPeakToPeak: Float
+    noiseFloor: Float,
+    signalToNoise: Float,
+    acSignalToNoise: Float,
+    acFrequencyHz: Float?,
+    sampleRateHz: Float,
+    sensorName: String
 ) {
     Card(
         modifier = Modifier
@@ -1259,7 +1297,7 @@ fun SensorTelemetryCard(
                 .padding(12.dp)
         ) {
             Text(
-                text = "3-AXIS MAGNETOMETER TELEMETRY (RAW)",
+                text = "REAL MAGNETOMETER TELEMETRY",
                 style = MaterialTheme.typography.labelSmall,
                 color = TextMediumEmphasis,
                 letterSpacing = 1.sp
@@ -1291,6 +1329,34 @@ fun SensorTelemetryCard(
                     color = AmberPrimary
                 )
             }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = String.format(
+                    Locale.US,
+                    "Filtered %.1f µT · Noise %.2f µT · Ferrous SNR %.1f×",
+                    filteredMag,
+                    noiseFloor,
+                    signalToNoise
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = TextMediumEmphasis
+            )
+            Text(
+                text = if (acFrequencyHz != null) {
+                    String.format(Locale.US, "AC %.0f Hz · Spectral SNR %.1f× · %.0f samples/s", acFrequencyHz, acSignalToNoise, sampleRateHz)
+                } else {
+                    String.format(Locale.US, "AC spectral scan warming up · %.0f samples/s", sampleRateHz)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = CyanElectric
+            )
+            if (sensorName.isNotBlank()) {
+                Text(
+                    text = sensorName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextDisabled
+                )
+            }
         }
     }
 }
@@ -1320,16 +1386,16 @@ fun MetricReadoutItem(
 }
 
 @Composable
-fun HardwareWarningBanner(isSimulated: Boolean) {
+fun HardwareWarningBanner(message: String?) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("hardware_warning_banner"),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSimulated) AmberPrimary.copy(alpha = 0.15f) else HazardRed.copy(alpha = 0.15f)
+            containerColor = HazardRed.copy(alpha = 0.15f)
         ),
         shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, if (isSimulated) AmberPrimary else HazardRed)
+        border = BorderStroke(1.dp, HazardRed)
     ) {
         Row(
             modifier = Modifier
@@ -1338,17 +1404,41 @@ fun HardwareWarningBanner(isSimulated: Boolean) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                imageVector = if (isSimulated) Icons.Default.Sensors else Icons.Default.Warning,
+                imageVector = Icons.Default.Warning,
                 contentDescription = null,
-                tint = if (isSimulated) AmberPrimary else HazardRed,
+                tint = HazardRed,
                 modifier = Modifier.size(20.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = if (isSimulated)
-                    "SIMULATION DEMO ACTIVE: Synthesizing real-time drywall studs and 60Hz AC conduit sweeps."
-                else
-                    "No hardware magnetometer detected on this device. Switch to Simulation mode to test.",
+                text = message ?: "The physical magnetometer is unavailable. No detections will be generated.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextHighEmphasis
+            )
+        }
+    }
+}
+
+@Composable
+fun AcCapabilityWarningBanner(sampleRateHz: Float) {
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("ac_capability_warning_banner"),
+        colors = CardDefaults.cardColors(containerColor = AmberPrimary.copy(alpha = 0.12f)),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, AmberPrimary.copy(alpha = 0.7f))
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Warning, contentDescription = null, tint = AmberPrimary, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = String.format(
+                    Locale.US,
+                    "Energized AC mode is unavailable: this phone delivers %.0f magnetic samples/s, but at least 130 are required to distinguish 50/60 Hz reliably. Fastener and metal-conduit scanning remain available.",
+                    sampleRateHz
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = TextHighEmphasis
             )
@@ -1400,7 +1490,7 @@ fun EducationalGuideSheet(
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Smartphone magnetometers measure local magnetic flux density (in micro-Teslas, µT). Wood has no significant magnetic permeability. Instead, this tool detects the ferrous steel drywall screws and nails that attach gypsum drywall sheets to wooden framing studs every 12 to 16 inches vertically.",
+            text = "Smartphone magnetometers measure local magnetic flux density (in micro-Teslas, µT). A phone cannot sense wood directly. SensorScan looks for repeatable peaks from steel screws, nails, metal framing, or steel conduit; one peak alone does not prove that a wood stud is present.",
             style = MaterialTheme.typography.bodyMedium,
             color = TextMediumEmphasis
         )
@@ -1418,7 +1508,7 @@ fun EducationalGuideSheet(
         GuideStepItem(
             step = "1",
             title = "Tare / Zero on Clear Wall",
-            description = "Hold your phone flat against a portion of the wall known to be free of metal, then tap the TARE button to calibrate the ambient Earth magnetic baseline."
+            description = "Hold the phone flat and still against a clear portion of wall, then tap TARE. Keep it still for about two seconds while SensorScan measures this phone's baseline and noise floor."
         )
 
         GuideStepItem(
@@ -1430,13 +1520,13 @@ fun EducationalGuideSheet(
         GuideStepItem(
             step = "3",
             title = "Verify Vertical Alignment",
-            description = "Once a screw is located, scan vertically up and down ~12\" to 16\" to find adjacent screws in the same stud line, confirming the exact stud center."
+            description = "After confirming one fastener peak, scan vertically above and below it. Treat a stud as likely only after a second repeatable fastener peak appears on the same vertical line. Fastener spacing varies by installation."
         )
 
         GuideStepItem(
             step = "4",
-            title = "AC Conduit & Wiring Safety",
-            description = "Live alternating current (50/60 Hz) produces high-frequency magnetic variance. If the AC Hazard alert triggers, avoid drilling into that area to prevent electrical damage."
+            title = "Energized Wiring Limitations",
+            description = "SensorScan checks for a sustained 50/60 Hz magnetic signature only when the phone's sample rate is sufficient. It cannot detect unpowered wires, low-current or cancelling conductors, or non-steel conduit reliably. Never use a clear screen as permission to drill; verify with a dedicated live-wire detector."
         )
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -1547,7 +1637,7 @@ fun MessageBannerCard(
 }
 
 /**
- * Simulated In-App Monetization Ad Banner
+ * In-App Monetization Ad Banner
  */
 @Composable
 fun AdBannerCard(
